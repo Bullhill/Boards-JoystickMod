@@ -129,6 +129,16 @@ uint8_t pulseCount = 0; // Steering Wheel Encoder
 bool encEnable = false; //debounce flag
 uint8_t thisEnc = 0, lastEnc = 0;
 
+
+//Joystick data ***********************************************************************************************************
+bool joystickEnabled = false;
+float joystickSteerAngleSetPoint = 0;
+bool joystickSteerSwitch = false;
+
+
+
+
+
 //Variables for settings
 struct Storage {
   uint8_t Kp = 40;              // proportional gain
@@ -264,9 +274,9 @@ void autosteerSetup()
 
 void autosteerLoop()
 {
-#ifdef ARDUINO_TEENSY41
+//#ifdef ARDUINO_TEENSY41
   ReceiveUdp();
-#endif
+//#endif
   //Serial.println("AutoSteer loop");
 
   // Loop triggers every 100 msec and sends back gyro heading, and roll, steer angle etc
@@ -305,6 +315,16 @@ void autosteerLoop()
           steerSwitch = 1;
         }
       }
+
+      //From Joystick
+      if (joystickSteerSwitch) 
+      {
+
+          currentState = 1;
+          steerSwitch = 1;
+          joystickSteerSwitch = false;
+      }
+
       previous = reading;
     }
     else                                      // No steer switch and no steer button
@@ -441,6 +461,31 @@ void autosteerLoop()
       digitalWrite(AUTOSTEER_ACTIVE_LED, 1);
       digitalWrite(AUTOSTEER_STANDBY_LED, 0);
     }
+    else if (joystickEnabled) 
+    {
+        //Enable H Bridge for IBT2, hyd aux, etc for cytron
+        if (steerConfig.CytronDriver)
+        {
+            if (steerConfig.IsRelayActiveHigh)
+            {
+                digitalWrite(PWM2_RPWM, 0);
+            }
+            else
+            {
+                digitalWrite(PWM2_RPWM, 1);
+            }
+        }
+        else digitalWrite(DIR1_RL_ENABLE, 1);
+
+        steerAngleError = steerAngleActual - joystickSteerAngleSetPoint;   //calculate the steering error
+
+        calcSteeringPID();  //do the pid
+        motorDrive();       //out to motors the pwm value
+        // Autosteer Led goes GREEN if autosteering
+
+        digitalWrite(AUTOSTEER_ACTIVE_LED, 1);
+        digitalWrite(AUTOSTEER_STANDBY_LED, 0);
+    }
     else
     {
       //we've lost the comm to AgOpenGPS, or just stop request
@@ -512,7 +557,7 @@ int currentRoll = 0;
 int rollLeft = 0;
 int steerLeft = 0;
 
-#ifdef ARDUINO_TEENSY41
+//#ifdef ARDUINO_TEENSY41
 // UDP Receive
 void ReceiveUdp()
 {
@@ -699,38 +744,38 @@ void ReceiveUdp()
             }//end FB
             else if (autoSteerUdpData[3] == 200) // Hello from AgIO
             {
-                if(Autosteer_running)
+                if (Autosteer_running)
                 {
-                int16_t sa = (int16_t)(steerAngleActual * 100);
+                    int16_t sa = (int16_t)(steerAngleActual * 100);
 
-                helloFromAutoSteer[5] = (uint8_t)sa;
-                helloFromAutoSteer[6] = sa >> 8;
+                    helloFromAutoSteer[5] = (uint8_t)sa;
+                    helloFromAutoSteer[6] = sa >> 8;
 
-                helloFromAutoSteer[7] = (uint8_t)helloSteerPosition;
-                helloFromAutoSteer[8] = helloSteerPosition >> 8;
-                helloFromAutoSteer[9] = switchByte;
+                    helloFromAutoSteer[7] = (uint8_t)helloSteerPosition;
+                    helloFromAutoSteer[8] = helloSteerPosition >> 8;
+                    helloFromAutoSteer[9] = switchByte;
 
-                SendUdp(helloFromAutoSteer, sizeof(helloFromAutoSteer), Eth_ipDestination, portDestination);
+                    SendUdp(helloFromAutoSteer, sizeof(helloFromAutoSteer), Eth_ipDestination, portDestination);
                 }
-                if(useBNO08x || useCMPS)
+                if (useBNO08x || useCMPS)
                 {
-                 SendUdp(helloFromIMU, sizeof(helloFromIMU), Eth_ipDestination, portDestination); 
+                    SendUdp(helloFromIMU, sizeof(helloFromIMU), Eth_ipDestination, portDestination);
                 }
             }
 
             else if (autoSteerUdpData[3] == 201)
             {
-             //make really sure this is the subnet pgn
-             if (autoSteerUdpData[4] == 5 && autoSteerUdpData[5] == 201 && autoSteerUdpData[6] == 201)
-             {
-              networkAddress.ipOne = autoSteerUdpData[7];
-              networkAddress.ipTwo = autoSteerUdpData[8];
-              networkAddress.ipThree = autoSteerUdpData[9];
-        
-              //save in EEPROM and restart
-              EEPROM.put(60, networkAddress);
-              SCB_AIRCR = 0x05FA0004; //Teensy Reset
-              }
+                //make really sure this is the subnet pgn
+                if (autoSteerUdpData[4] == 5 && autoSteerUdpData[5] == 201 && autoSteerUdpData[6] == 201)
+                {
+                    networkAddress.ipOne = autoSteerUdpData[7];
+                    networkAddress.ipTwo = autoSteerUdpData[8];
+                    networkAddress.ipThree = autoSteerUdpData[9];
+
+                    //save in EEPROM and restart
+                    EEPROM.put(60, networkAddress);
+                    SCB_AIRCR = 0x05FA0004; //Teensy Reset
+                }
             }//end 201
 
             //whoami
@@ -743,7 +788,7 @@ void ReceiveUdp()
 
                     //hello from AgIO
                     uint8_t scanReply[] = { 128, 129, Eth_myip[3], 203, 7,
-                        Eth_myip[0], Eth_myip[1], Eth_myip[2], Eth_myip[3], 
+                        Eth_myip[0], Eth_myip[1], Eth_myip[2], Eth_myip[3],
                         rem_ip[0],rem_ip[1],rem_ip[2], 23 };
 
                     //checksum
@@ -752,7 +797,7 @@ void ReceiveUdp()
                     {
                         CK_A = (CK_A + scanReply[i]);
                     }
-                    scanReply[sizeof(scanReply)-1] = CK_A;
+                    scanReply[sizeof(scanReply) - 1] = CK_A;
 
                     static uint8_t ipDest[] = { 255,255,255,255 };
                     uint16_t portDest = 9999; //AOG port that listens
@@ -762,18 +807,52 @@ void ReceiveUdp()
                 }
             }
         } //end if 80 81 7F
+
+
+        if (autoSteerUdpData[0] == 0x80 && autoSteerUdpData[1] == 0x81 && autoSteerUdpData[2] == 0x82) //Joystick
+        {
+            //SteerChange
+            if (autoSteerUdpData[3] == 0xB1)
+            {
+                joystickSteerAngleSetPoint += ((float)((int)autoSteerUdpData[5] - 128)) * 0.1;
+                Serial.print("Requested Steer Angle is ");
+                Serial.println(joystickSteerAngleSetPoint);
+            }
+
+            //JoystickButonClick
+            else if (autoSteerUdpData[3] == 0xB2)
+            {
+                if (autoSteerUdpData[5] == 0x01) //Single click - Enable guidance
+                {
+                    joystickSteerSwitch = true;
+                }
+                else if (autoSteerUdpData[5] == 0x02) //Duble click - Change resolution of joystick. Handled by joystick module
+                {
+
+                }
+                else if (autoSteerUdpData[5] == 0x03) //Long click - Enable/disable joystick
+                {
+                    joystickSteerAngleSetPoint = steerAngleActual;
+                    joystickEnabled = !joystickEnabled;
+                    Serial.print("Joystick is ");
+                    Serial.println(joystickEnabled);
+                }
+            }
+
+        } //end if 80 81 82
+
     }
 }
-#endif
+//#endif
 
-#ifdef ARDUINO_TEENSY41
+//#ifdef ARDUINO_TEENSY41
 void SendUdp(uint8_t *data, uint8_t datalen, IPAddress dip, uint16_t dport)
 {
   Eth_udpAutoSteer.beginPacket(dip, dport);
   Eth_udpAutoSteer.write(data, datalen);
   Eth_udpAutoSteer.endPacket();
 }
-#endif
+//#endif
 
 //ISR Steering Wheel Encoder
 void EncoderFunc()
