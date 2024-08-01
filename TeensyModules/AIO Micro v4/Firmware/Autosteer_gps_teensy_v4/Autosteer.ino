@@ -132,7 +132,7 @@ uint8_t thisEnc = 0, lastEnc = 0;
 
 //Joystick data ***********************************************************************************************************
 bool joystickEnabled = false;
-float joystickSteerAngleSetPoint = 0;
+int16_t joystickPwmRequest = 0;
 bool joystickSteerSwitch = false;
 
 
@@ -477,9 +477,9 @@ void autosteerLoop()
         }
         else digitalWrite(DIR1_RL_ENABLE, 1);
 
-        steerAngleError = steerAngleActual - joystickSteerAngleSetPoint;   //calculate the steering error
 
-        calcSteeringPID();  //do the pid
+
+        calcJoystick();     //Map joystick value to PWM value
         motorDrive();       //out to motors the pwm value
         // Autosteer Led goes GREEN if autosteering
 
@@ -814,25 +814,21 @@ void ReceiveUdp()
             //SteerChange
             if (autoSteerUdpData[3] == 0xB1)
             {
-                joystickSteerAngleSetPoint += ((float)((int)autoSteerUdpData[5] - 128)) * 0.1;
-                Serial.print("Requested Steer Angle is ");
-                Serial.println(joystickSteerAngleSetPoint);
+
+                joystickPwmRequest = (autoSteerUdpData[5] | ((int8_t)autoSteerUdpData[6]) << 8);
+                Serial.print("Requested PWM is ");
+                Serial.println(joystickPwmRequest);
             }
 
             //JoystickButonClick
             else if (autoSteerUdpData[3] == 0xB2)
             {
-                if (autoSteerUdpData[5] == 0x01) //Single click - Enable guidance
+                if (autoSteerUdpData[5] == 0x01) //Enable guidance
                 {
                     joystickSteerSwitch = true;
                 }
-                else if (autoSteerUdpData[5] == 0x02) //Duble click - Change resolution of joystick. Handled by joystick module
+                else if (autoSteerUdpData[5] == 0x02) // Enable/disable joystick
                 {
-
-                }
-                else if (autoSteerUdpData[5] == 0x03) //Long click - Enable/disable joystick
-                {
-                    joystickSteerAngleSetPoint = steerAngleActual;
                     joystickEnabled = !joystickEnabled;
                     Serial.print("Joystick is ");
                     Serial.println(joystickEnabled);

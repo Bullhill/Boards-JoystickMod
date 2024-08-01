@@ -17,7 +17,6 @@ struct ConfigIP {
 #include <Wire.h>
 #include "EtherCard_AOG.h"
 #include <IPAddress.h>
-#include <BfButton.h>
 
 
 // ethernet interface ip address
@@ -53,21 +52,33 @@ void(*resetFunc) (void) = 0;
 #define CS_Pin 10
 
 
- 
-int btnPin=4; //GPIO #4-Push button on encoder
-int DT=5; //GPIO #5-DT on encoder (Output B)
-int CLK=6; //GPIO #6-CLK on encoder (Output A)
-BfButton btn(BfButton::STANDALONE_DIGITAL, btnPin, true, LOW);
+#define JoystickX A7
+#define JoystickY A6
 
-uint8_t Speed[3] = {1, 3, 10};
-uint8_t SelectedSpeed = 0;
 
-int angle = 0; 
-int aState;
-int aLastState;  
+int workingFrequens = 100; //1000ms / 10hz
+
+uint8_t maxSpeed = 128;
+bool invertXAxis = true;
+bool invertYAxis = true;
+
+int16_t JoystickPos = 0; //-255 to 255
+uint8_t Deadband = 50; //For adjusting deadband in joystick
+float JoystickPowValue = 2.5; //Exponent to make it easy to fine steer. 1 = linear
+
+
+int8_t YAxisStatus = 0;
+int YAxisLimit = 500;
+int YAxisReset = 200;
+
+
+long MaxPowValue = (long) pow(512-Deadband, JoystickPowValue);
+
+
+int JoystickReading;
 
 //JoystickPNGs
-uint8_t SteerChangePGN[] = { 128, 129, 130, 177, 1, 128, 0 };
+uint8_t SteerChangePGN[] = { 128, 129, 130, 177, 1, 0, 0, 0 };
 int8_t SteerChangePGN_Size = sizeof(SteerChangePGN) - 1;
 uint8_t ButtonClickPGN[] = { 128, 129, 130, 178, 1, 0, 0 };
 int8_t ButtonClickPGN_Size = sizeof(ButtonClickPGN) - 1;
@@ -120,14 +131,6 @@ void setup()
     //register to port 10555
     ether.udpServerListenOnPort(&udpSteerRecv, 10555);
 
-    //set the pins to be input (pin numbers)
-    pinMode(CLK,INPUT_PULLUP);
-    pinMode(DT,INPUT_PULLUP);
-    aLastState = digitalRead(CLK);
-    
-    btn.onPress(pressHandler)
-    .onDoublePress(pressHandler) // default timeout
-    .onPressFor(pressHandler, 1000); // custom timeout for 1 second
 
     Serial.println("Setup complete, waiting for AgOpenGPS");
 
@@ -135,41 +138,108 @@ void setup()
 
 
 void loop() {
-  
-  //Wait for button press to execute commands
-  btn.read();
-  
-  aState = digitalRead(CLK);
-  
-  //Encoder rotation tracking
-  if (aState != aLastState){     
-    if (digitalRead(DT) != aState) { 
-      SteerChangePGN[5] = 128 - Speed[SelectedSpeed];
-      Serial.print(128 - Speed[SelectedSpeed]);
-      Serial.println("Steer-");
-    }
-    else {
-      SteerChangePGN[5] = 128 + Speed[SelectedSpeed];
-      Serial.print(128 + Speed[SelectedSpeed]);
-      Serial.println("Steer+");
-    }
-    
+
+//int16_t JoystickPos = 0; //-255 to 255
+//uint8_t Deadband = 50; //For adjusting deadband in joystick
+//float JoystickPowValue = 3.5; //Exponent to make it easy to fine steer. 1 = linear
+//int JoystickReading;
+
+  int YAxis = analogRead(JoystickY);
+  if(invertYAxis)
+    YAxis = 1024 - YAxis;
+
+  if(YAxis < 512 + YAxisReset && YAxis > 512 - YAxisReset)
+    YAxisStatus = 0;
+  else if(YAxisStatus == 0 && YAxis > (512 + YAxisLimit))
+  {
+    YAxisStatus = 1;
+    ButtonClickPGN[5] = 0x02;
+
     //checksum
     int16_t CK_A = 0;
-    for (uint8_t i = 2; i < SteerChangePGN_Size; i++)
+    for (uint8_t i = 2; i < ButtonClickPGN_Size; i++)
     {
-        CK_A = (CK_A + SteerChangePGN[i]);
+        CK_A = (CK_A + ButtonClickPGN[i]);
     }
-    SteerChangePGN[SteerChangePGN_Size] = CK_A;
+    ButtonClickPGN[ButtonClickPGN_Size] = CK_A;
 
     //off to AOG
-    ether.sendUdp(SteerChangePGN, sizeof(SteerChangePGN), portMy, ipDestination, portDestination);
-  }   
-  aLastState = aState;
+    ether.sendUdp(ButtonClickPGN, sizeof(ButtonClickPGN), portMy, ipDestination, portDestination);
+    
+    Serial.println("Enable autosteer!");
+  }
+  else if(YAxisStatus == 0 && YAxis < (512 - YAxisLimit))
+  {
+    YAxisStatus = -1;
+    ButtonClickPGN[5] = 0x01;
+
+    //checksum
+    int16_t CK_A = 0;
+    for (uint8_t i = 2; i < ButtonClickPGN_Size; i++)
+    {
+        CK_A = (CK_A + ButtonClickPGN[i]);
+    }
+    ButtonClickPGN[ButtonClickPGN_Size] = CK_A;
+
+    //off to AOG
+    ether.sendUdp(ButtonClickPGN, sizeof(ButtonClickPGN), portMy, ipDestination, portDestination);
+    
+    Serial.println("Enable joystickSteer!");
+  }
+  
+  Serial.print(YAxis);
+  Serial.print(" - ");
+  Serial.println(YAxisStatus);
+  
+
+  JoystickReading = analogRead(JoystickX);
+  if(invertXAxis)
+    JoystickReading = 1024 - JoystickReading;
+
+  if(JoystickReading > 512 - Deadband && JoystickReading < 512 + Deadband)
+  {
+    JoystickPos = 0;
+  }
+  else
+  {
+    int calculatedValue = JoystickReading - 512;
+
+    if(calculatedValue < 0)
+      calculatedValue = calculatedValue * -1;
+
+    calculatedValue = calculatedValue - Deadband;
+
+    double PowerdValue = pow((float)calculatedValue, JoystickPowValue);
+    
+    JoystickPos = (int16_t) ((double)(PowerdValue / MaxPowValue) * maxSpeed);
+
+    if(JoystickReading < 512)
+      JoystickPos = JoystickPos * -1;
+    
+  }
+  SteerChangePGN[5] = (uint8_t)JoystickPos;
+  SteerChangePGN[6] = JoystickPos >> 8;
+  
+
+  
+  
+  //checksum
+  int16_t CK_A = 0;
+  for (uint8_t i = 2; i < SteerChangePGN_Size; i++)
+  {
+      CK_A = (CK_A + SteerChangePGN[i]);
+  }
+  SteerChangePGN[SteerChangePGN_Size] = CK_A;
+
+  //off to AOG
+  ether.sendUdp(SteerChangePGN, sizeof(SteerChangePGN), portMy, ipDestination, portDestination);
+
+
+  delay(workingFrequens);
 
 }
 
-
+/*
 //Button press hanlding function
 void pressHandler (BfButton *btn, BfButton::press_pattern_t pattern) {
   switch (pattern) {
@@ -202,7 +272,7 @@ void pressHandler (BfButton *btn, BfButton::press_pattern_t pattern) {
 
     //off to AOG
     ether.sendUdp(ButtonClickPGN, sizeof(ButtonClickPGN), portMy, ipDestination, portDestination);
-}
+}*/
 
 void udpSteerRecv(uint16_t dest_port, uint8_t src_ip[IP_LEN], uint16_t src_port, uint8_t* udpData, uint16_t len)
 {
